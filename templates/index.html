@@ -15,13 +15,16 @@
   .flash-error { background: #fdeaea; border: 1px solid #c88; padding: .5rem .8rem; }
   .stat { display: inline-block; margin: 0 2rem .5rem 0; }
   .stat b { font-size: 1.3rem; }
-  form { border: 1px solid #ddd; padding: 1rem; border-radius: 6px; }
+  form { border: 1px solid #ddd; padding: 1rem; border-radius: 6px; margin-bottom: 1rem; }
   textarea { width: 100%; box-sizing: border-box; font-family: monospace; }
   .muted { color: #777; font-size: .85rem; }
+  .tag { font-size: .8rem; padding: 0 .35rem; border-radius: 3px; }
+  .tag-direct { background: #e6eefc; }
+  .tag-gross { background: #fdf0dd; }
 </style>
 </head>
 <body>
-<h1>灌装线欠重累计复检 <span class="muted">（标称 {{ nominal }} 克，累计达 {{ trigger }} 克触发复检）</span></h1>
+<h1>灌装线欠重累计复检 <span class="muted">（标称 {{ nominal }} 克，累计达 {{ trigger }} 克触发复检；克重均为整数）</span></h1>
 
 {% with messages = get_flashed_messages(with_categories=true) %}
   {% for cat, msg in messages %}<p class="flash-{{ cat }}">{{ msg }}</p>{% endfor %}
@@ -35,14 +38,57 @@
   <span class="stat">复检事件 <b>{{ event_count }}</b> 条</span>
 </div>
 
+<h2>按序号查净重与来源</h2>
+<form method="get" action="{{ url_for('lookup') }}">
+  <input type="text" name="seq" value="{{ lookup_seq or '' }}" placeholder="抽检序号，如 12">
+  <button type="submit">查询</button>
+</form>
+{% if lookup_error %}<p class="flash-error">{{ lookup_error }}</p>{% endif %}
+{% if lookup_result %}
+<table>
+  <tr><th>序号</th><th>净重（克）</th><th>来源</th><th>毛重（克）</th><th>包装批号</th><th>所用皮重（克）</th></tr>
+  <tr>
+    <td>{{ lookup_result.seq }}</td>
+    <td>{{ lookup_result.net_weight }}</td>
+    <td>{% if lookup_result.source == "gross" %}<span class="tag tag-gross">毛重扣皮</span>{% else %}<span class="tag tag-direct">直接净重</span>{% endif %}</td>
+    <td>{{ lookup_result.gross_weight if lookup_result.gross_weight is not none else "—" }}</td>
+    <td>{{ lookup_result.batch_no if lookup_result.batch_no is not none else "—" }}</td>
+    <td>{{ lookup_result.tare if lookup_result.tare is not none else "—" }}</td>
+  </tr>
+</table>
+{% endif %}
+
 <h2>上传抽检 CSV</h2>
 <form method="post" action="{{ url_for('upload') }}" enctype="multipart/form-data">
-  <p>文件（两列：抽检序号,整数克重；首行表头可省）：<input type="file" name="file" accept=".csv,text/csv"></p>
+  <p>文件（两列「抽检序号,净重」按直接净重；或三列「抽检序号,毛重,包装批号」扣皮重；首行表头可省）：
+     <input type="file" name="file" accept=".csv,text/csv"></p>
   <p>或直接粘贴：</p>
-  <textarea name="csv_text" rows="5" placeholder="序号,克重&#10;1,494&#10;2,497"></textarea>
+  <textarea name="csv_text" rows="5" placeholder="两列（直接净重）：序号,净重&#10;1,494&#10;或三列（毛重扣皮）：序号,毛重,包装批号&#10;2,500,B01"></textarea>
   <p><button type="submit">上传生效</button>
-     <span class="muted">同号为更正；新号必须大于当前最大序号。每次上传整体生效或整体失败。</span></p>
+     <span class="muted">同号为更正，以最后一次成功上传的来源为准（净重相同也换来源）；新号必须大于当前最大序号；
+     三列缺皮重或算出负净重整次退回。每次上传整体生效或整体失败。</span></p>
 </form>
+
+<h2>包装批皮重登记 / 更正</h2>
+<form method="post" action="{{ url_for('tare_upload') }}" enctype="multipart/form-data">
+  <p>文件（两列：包装批号,皮重（克）；可一次多行，首行表头可省）：
+     <input type="file" name="tare_file" accept=".csv,text/csv"></p>
+  <p>或直接粘贴：</p>
+  <textarea name="tare_text" rows="4" placeholder="包装批号,皮重&#10;B01,6&#10;B02,8"></textarea>
+  <p><button type="submit">登记 / 更正皮重</button>
+     <span class="muted">皮重更正只重新换算仍引用该包装批的毛重称重；任一称重出现负净重则整次操作退回。</span></p>
+</form>
+
+{% if packaging %}
+<h2>已登记包装批（{{ packaging|length }} 个）</h2>
+<table>
+  <tr><th>包装批号</th><th>皮重（克）</th><th>首次登记时间</th><th>最近更正时间</th></tr>
+  {% for p in packaging %}
+  <tr><td style="text-align:left">{{ p.batch_no }}</td><td>{{ p.tare }}</td>
+      <td>{{ p.applied_at }}</td><td>{{ p.updated_at }}</td></tr>
+  {% endfor %}
+</table>
+{% endif %}
 
 <h2>复检清单（累计达 {{ trigger }} 克触发）</h2>
 {% if events %}
@@ -55,22 +101,38 @@
 </table>
 {% else %}<p class="muted">暂无复检事件。</p>{% endif %}
 
-<h2>最近称重（最多 50 条）</h2>
+<h2>最近称重（最多 50 条，按净重判定复检）</h2>
 {% if recent %}
 <table>
-  <tr><th>序号</th><th>实测克重</th><th>差值（{{ nominal }}−实测）</th></tr>
+  <tr><th>序号</th><th>净重（克）</th><th>来源</th><th>差值（{{ nominal }}−净重）</th></tr>
   {% for w in recent %}
-  <tr><td>{{ w.seq }}</td><td>{{ w.weight }}</td><td>{{ nominal - w.weight }}</td></tr>
+  <tr><td>{{ w.seq }}</td><td>{{ w.net_weight }}</td>
+      <td>{% if w.source == "gross" %}<span class="tag tag-gross">毛重扣皮</span>{% else %}<span class="tag tag-direct">直接净重</span>{% endif %}</td>
+      <td>{{ nominal - w.net_weight }}</td></tr>
   {% endfor %}
 </table>
 {% else %}<p class="muted">暂无称重数据。</p>{% endif %}
 
+<h2>毛重换算记录（毛重 − 皮重 = 净重，最多 200 条）</h2>
+{% if conversions %}
+<table>
+  <tr><th>序号</th><th>毛重（克）</th><th>包装批号</th><th>所用皮重（克）</th><th>净重（克）</th></tr>
+  {% for c in conversions %}
+  <tr><td>{{ c.seq }}</td><td>{{ c.gross_weight }}</td>
+      <td style="text-align:left">{{ c.batch_no }}</td><td>{{ c.tare }}</td>
+      <td>{{ c.net_weight }}</td></tr>
+  {% endfor %}
+</table>
+{% else %}<p class="muted">暂无毛重扣皮记录。</p>{% endif %}
+
 <h2>批次记录</h2>
 {% if batches %}
 <table>
-  <tr><th>批次</th><th>生效时间</th><th>行数</th><th>新增</th><th>更正</th><th>复算起点</th><th>沿用旧结果自</th></tr>
+  <tr><th>批次</th><th>类型</th><th>生效时间</th><th>行数</th><th>新增</th><th>更正</th><th>复算起点</th><th>沿用旧结果自</th></tr>
   {% for b in batches %}
-  <tr><td>{{ b.id }}</td><td>{{ b.applied_at }}</td><td>{{ b.rows }}</td>
+  <tr><td>{{ b.id }}</td>
+      <td>{% if b.op_type == "gross" %}毛重上传{% elif b.op_type == "tare" %}皮重登记{% else %}净重上传{% endif %}</td>
+      <td>{{ b.applied_at }}</td><td>{{ b.rows }}</td>
       <td>{{ b.additions }}</td><td>{{ b.corrections }}</td>
       <td>{{ b.first_changed if b.first_changed is not none else "—" }}</td>
       <td>{{ b.resumed_at if b.resumed_at is not none else "—" }}</td></tr>
@@ -78,6 +140,8 @@
 </table>
 {% else %}<p class="muted">暂无批次。</p>{% endif %}
 
-<p class="muted">API：POST /api/upload（CSV 正文）、GET /api/state、GET /api/events、GET /api/weighings</p>
+<p class="muted">API：POST /api/upload（两列/三列 CSV 正文）、POST /api/tare（包装批号,皮重）、
+GET /api/weighing/&lt;序号&gt;、GET /api/state、GET /api/events、
+GET /api/weighings、GET /api/packaging-batches</p>
 </body>
 </html>

@@ -1,4 +1,4 @@
-"""复检系统测试：重点验证更正后的增量复算边界、并发与持久化。"""
+"""复检系统测试：净重口径规则、更正后的增量复算边界、并发与持久化。"""
 
 import io
 import os
@@ -15,13 +15,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("FILLING_DB",
                       os.path.join(tempfile.gettempdir(), "filling_import_default.db"))
 
-from app import create_app, parse_csv, NOMINAL_GRAMS, TRIGGER_GRAMS  # noqa: E402
+from app import create_app, parse_net_csv, NOMINAL_GRAMS, TRIGGER_GRAMS  # noqa: E402
 
 
 # ------------------------------------------------------------------ 工具
 
 def reference(weights):
-    """全量参考实现：weights {seq: weight} -> (events, states)。"""
+    """全量参考实现：weights {seq: net_weight} -> (events, states)。"""
     cum, rs = 0, None
     events, states = [], {}
     for seq in sorted(weights):
@@ -50,17 +50,17 @@ def db(app, sql, args=()):
 
 def snapshot(app):
     return (
-        db(app, "SELECT seq, weight FROM weighings ORDER BY seq"),
+        db(app, "SELECT seq, net_weight, source FROM weighings ORDER BY seq"),
         db(app, "SELECT seq, cumulative, round_start FROM run_state ORDER BY seq"),
         db(app, "SELECT id, batch_id, start_seq, end_seq, grams FROM events ORDER BY id"),
-        db(app, "SELECT id, rows, additions, corrections, first_changed, resumed_at "
-                "FROM batches ORDER BY id"),
+        db(app, "SELECT id, op_type, rows, additions, corrections, first_changed, "
+                "resumed_at FROM batches ORDER BY id"),
     )
 
 
 def assert_matches_reference(app, weights):
     exp_events, exp_states = reference(weights)
-    got_w = dict(db(app, "SELECT seq, weight FROM weighings"))
+    got_w = dict(db(app, "SELECT seq, net_weight FROM weighings"))
     assert got_w == weights
     got_states = {s: (c, r) for s, c, r in db(
         app, "SELECT seq, cumulative, round_start FROM run_state")}
@@ -134,6 +134,7 @@ def test_index_page(client, app):
     r = client.get("/")
     assert r.status_code == 200
     assert "复检清单" in r.get_data(as_text=True)
+    assert "包装批皮重" in r.get_data(as_text=True)
 
 
 # ------------------------------------------------------------------ 录入约束与原子性
@@ -171,13 +172,15 @@ def test_duplicate_seq_in_file_rejected(client, app):
 
 
 def test_parse_csv_units():
-    assert parse_csv("序号,克重\n1,490\n") == [(1, 490)]
+    assert parse_net_csv("序号,克重\n1,490\n") == [(1, 490)]
     with pytest.raises(ValueError):
-        parse_csv("1,490\n2\n")
+        parse_net_csv("1,490\n2\n")
     with pytest.raises(ValueError):
-        parse_csv("0,490")
+        parse_net_csv("0,490")
     with pytest.raises(ValueError):
-        parse_csv("")
+        parse_net_csv("")
+    with pytest.raises(ValueError):
+        parse_net_csv("1,490\n2,491,3\n")
 
 
 # ------------------------------------------------------------------ 更正后的复算边界
@@ -261,7 +264,7 @@ def test_mixed_correction_and_additions(client, app):
 def test_noop_correction_no_recompute(client, app):
     api_upload(client, [(i, 494) for i in range(1, 11)])
     before = snapshot(app)
-    r = api_upload(client, [(5, 494)])  # 同号同重：无实际改动
+    r = api_upload(client, [(5, 494)])  # 同号同净重同来源：无实际改动
     body = r.get_json()
     assert r.status_code == 200
     assert body["corrections"] == 0 and body["first_changed"] is None
