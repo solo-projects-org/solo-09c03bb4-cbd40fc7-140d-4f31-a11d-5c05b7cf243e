@@ -1,0 +1,13 @@
+services:
+  web:
+    build: .
+    image: filling-recheck:latest
+    container_name: filling-recheck
+    ports:
+      - "5000:5000"
+    volumes:
+      - filling-data:/data
+    restart: unless-stopped
+
+volumes:
+  filling-data:

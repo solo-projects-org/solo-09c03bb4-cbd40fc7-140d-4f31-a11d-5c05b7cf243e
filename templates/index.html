@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>灌装线欠重累计复检</title>
+<style>
+  body { font-family: system-ui, "PingFang SC", "Microsoft YaHei", sans-serif;
+         max-width: 980px; margin: 1.5rem auto; padding: 0 1rem; color: #222; }
+  h1 { font-size: 1.35rem; } h2 { font-size: 1.05rem; margin-top: 2rem; }
+  table { border-collapse: collapse; width: 100%; margin: .5rem 0 1rem; font-size: .92rem; }
+  th, td { border: 1px solid #ccc; padding: .3rem .55rem; text-align: right; }
+  th { background: #f3f3f3; }
+  .flash-ok { background: #e8f7e8; border: 1px solid #7b7; padding: .5rem .8rem; }
+  .flash-error { background: #fdeaea; border: 1px solid #c88; padding: .5rem .8rem; }
+  .stat { display: inline-block; margin: 0 2rem .5rem 0; }
+  .stat b { font-size: 1.3rem; }
+  form { border: 1px solid #ddd; padding: 1rem; border-radius: 6px; }
+  textarea { width: 100%; box-sizing: border-box; font-family: monospace; }
+  .muted { color: #777; font-size: .85rem; }
+</style>
+</head>
+<body>
+<h1>灌装线欠重累计复检 <span class="muted">（标称 {{ nominal }} 克，累计达 {{ trigger }} 克触发复检）</span></h1>
+
+{% with messages = get_flashed_messages(with_categories=true) %}
+  {% for cat, msg in messages %}<p class="flash-{{ cat }}">{{ msg }}</p>{% endfor %}
+{% endwith %}
+
+<div>
+  <span class="stat">称重记录 <b>{{ weighing_count }}</b> 条</span>
+  <span class="stat">当前累计 <b>{{ state.cumulative if state else 0 }}</b> 克</span>
+  <span class="stat">本轮起点 <b>{{ state.round_start if state and state.round_start is not none else "—" }}</b></span>
+  <span class="stat">最近序号 <b>{{ state.seq if state else "—" }}</b></span>
+  <span class="stat">复检事件 <b>{{ event_count }}</b> 条</span>
+</div>
+
+<h2>上传抽检 CSV</h2>
+<form method="post" action="{{ url_for('upload') }}" enctype="multipart/form-data">
+  <p>文件（两列：抽检序号,整数克重；首行表头可省）：<input type="file" name="file" accept=".csv,text/csv"></p>
+  <p>或直接粘贴：</p>
+  <textarea name="csv_text" rows="5" placeholder="序号,克重&#10;1,494&#10;2,497"></textarea>
+  <p><button type="submit">上传生效</button>
+     <span class="muted">同号为更正；新号必须大于当前最大序号。每次上传整体生效或整体失败。</span></p>
+</form>
+
+<h2>复检清单（累计达 {{ trigger }} 克触发）</h2>
+{% if events %}
+<table>
+  <tr><th>#</th><th>起始序号（本轮转正）</th><th>截止序号（触发）</th><th>累计克数</th><th>批次</th><th>生效时间</th></tr>
+  {% for e in events %}
+  <tr><td>{{ e.id }}</td><td>{{ e.start_seq }}</td><td>{{ e.end_seq }}</td>
+      <td>{{ e.grams }}</td><td>{{ e.batch_id }}</td><td>{{ e.applied_at }}</td></tr>
+  {% endfor %}
+</table>
+{% else %}<p class="muted">暂无复检事件。</p>{% endif %}
+
+<h2>最近称重（最多 50 条）</h2>
+{% if recent %}
+<table>
+  <tr><th>序号</th><th>实测克重</th><th>差值（{{ nominal }}−实测）</th></tr>
+  {% for w in recent %}
+  <tr><td>{{ w.seq }}</td><td>{{ w.weight }}</td><td>{{ nominal - w.weight }}</td></tr>
+  {% endfor %}
+</table>
+{% else %}<p class="muted">暂无称重数据。</p>{% endif %}
+
+<h2>批次记录</h2>
+{% if batches %}
+<table>
+  <tr><th>批次</th><th>生效时间</th><th>行数</th><th>新增</th><th>更正</th><th>复算起点</th><th>沿用旧结果自</th></tr>
+  {% for b in batches %}
+  <tr><td>{{ b.id }}</td><td>{{ b.applied_at }}</td><td>{{ b.rows }}</td>
+      <td>{{ b.additions }}</td><td>{{ b.corrections }}</td>
+      <td>{{ b.first_changed if b.first_changed is not none else "—" }}</td>
+      <td>{{ b.resumed_at if b.resumed_at is not none else "—" }}</td></tr>
+  {% endfor %}
+</table>
+{% else %}<p class="muted">暂无批次。</p>{% endif %}
+
+<p class="muted">API：POST /api/upload（CSV 正文）、GET /api/state、GET /api/events、GET /api/weighings</p>
+</body>
+</html>
